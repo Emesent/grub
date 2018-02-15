@@ -26,6 +26,7 @@
 #include <grub/file.h>
 #include <grub/procfs.h>
 #include <grub/partition.h>
+#include <grub/env.h>
 
 #ifdef GRUB_UTIL
 #include <grub/emu/hostdisk.h>
@@ -41,6 +42,7 @@ static const struct grub_arg_option options[] =
     /* TRANSLATORS: It's still restricted to cryptodisks only.  */
     {"all", 'a', 0, N_("Mount all."), 0, 0},
     {"boot", 'b', 0, N_("Mount all volumes with `boot' flag set."), 0, 0},
+    {"tpm", 't', 0, N_("Read passphrase from tpm nvram."), N_("index:pcr,pcr,..."), ARG_TYPE_STRING},
     {0, 0, 0, 0, 0, 0}
   };
 
@@ -934,6 +936,14 @@ grub_cmd_cryptomount (grub_extcmd_context_t ctxt, int argc, char **args)
   if (argc < 1 && !state[1].set && !state[2].set)
     return grub_error (GRUB_ERR_BAD_ARGUMENT, "device name required");
 
+  if (state[3].set)
+    {
+      if (!state[3].arg)
+        return grub_error (GRUB_ERR_BAD_ARGUMENT, "Invalid arguments to --tpm");
+
+      grub_env_set ("passphrase_tpm_nvram", state[3].arg);
+    }
+
   have_it = 0;
   if (state[0].set)
     {
@@ -1141,7 +1151,7 @@ GRUB_MOD_INIT (cryptodisk)
 {
   grub_disk_dev_register (&grub_cryptodisk_dev);
   cmd = grub_register_extcmd ("cryptomount", grub_cmd_cryptomount, 0,
-			      N_("SOURCE|-u UUID|-a|-b"),
+			      N_("SOURCE|-u UUID|-a|-b [-t nvram_index:pcrlist]"),
 			      N_("Mount a crypto device."), options);
   grub_procfs_register ("luks_script", &luks_script);
 }

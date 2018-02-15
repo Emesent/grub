@@ -26,6 +26,8 @@
 #include <grub/crypto.h>
 #include <grub/partition.h>
 #include <grub/i18n.h>
+#include <grub/env.h>
+#include <grub/tpm.h>
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
@@ -307,6 +309,51 @@ configure_ciphers (grub_disk_t disk, const char *check_uuid,
   return newdev;
 }
 
+#ifndef GRUB_UTIL
+/* pcrlist is in the format '1,2,5,8'. Convert this into a bitfield. */
+static grub_err_t
+luks_parse_pcrlist(const char *pcrlist, grub_uint8_t pcr_sel[PCR_SELECT_MAX])
+{
+  grub_size_t pcrlist_len = grub_strlen(pcrlist);
+  grub_size_t s_len;
+  const char *s;
+  char buf[4];
+
+  pcr_sel[0] = pcr_sel[1] = pcr_sel[2] = 0;
+
+  do
+    {
+      s = pcrlist;
+      pcrlist = grub_memchr(s, ',', pcrlist_len);
+      if (pcrlist)
+        {
+          s_len = pcrlist - s;
+          pcrlist++;
+          pcrlist_len -= s_len + 1;
+        }
+      else
+        {
+          s_len = pcrlist_len;
+          pcrlist_len = 0;
+        }
+
+
+      if (s_len > sizeof(buf) - 1)
+        return grub_error (GRUB_ERR_OUT_OF_RANGE, "Badly formed pcrlist");
+
+      grub_snprintf (buf, s_len + 1, "%s", s);
+
+      unsigned long pcr = grub_strtoul (buf, NULL, 0);
+      if (pcr >= 8 * PCR_SELECT_MAX)
+        return grub_error(GRUB_ERR_OUT_OF_RANGE, "Badly formed pcrlist");
+
+      pcr_sel[pcr / 8] |= (1 << (pcr % 8));
+    } while (pcrlist);
+
+  return GRUB_ERR_NONE;
+}
+#endif
+
 static grub_err_t
 luks_recover_key (grub_disk_t source,
 		  grub_cryptodisk_t dev)
@@ -340,18 +387,72 @@ luks_recover_key (grub_disk_t source,
   if (!split_key)
     return grub_errno;
 
-  /* Get the passphrase from the user.  */
-  tmp = NULL;
-  if (source->partition)
-    tmp = grub_partition_get_name (source->partition);
-  grub_printf_ (N_("Enter passphrase for %s%s%s (%s): "), source->name,
-	       source->partition ? "," : "", tmp ? : "",
-	       dev->uuid);
-  grub_free (tmp);
-  if (!grub_password_get (passphrase, MAX_PASSPHRASE))
+/* TPM functions not available in GRUB_UTIL */
+#ifndef GRUB_UTIL
+  if (grub_env_get("passphrase_tpm_nvram") != 0)
     {
-      grub_free (split_key);
-      return grub_error (GRUB_ERR_BAD_ARGUMENT, "Passphrase not supplied");
+      /* Get the passphrase from TPM nvram */
+
+      const char *tpm_nvram_params = grub_env_get("passphrase_tpm_nvram");
+
+      /* Populate pcr_sel */
+      grub_uint8_t pcr_sel[PCR_SELECT_MAX];
+      const char *pcrlist = grub_memchr(tpm_nvram_params, ':', grub_strlen(tpm_nvram_params));
+      if (!pcrlist)
+        {
+          grub_free (split_key);
+          return grub_error (GRUB_ERR_BAD_ARGUMENT, "Invalid tpm_nvram params");
+        }
+
+      err = luks_parse_pcrlist (pcrlist + 1, pcr_sel);
+      if (err != GRUB_ERR_NONE)
+        {
+          grub_free (split_key);
+          return err;
+        }
+
+      /* Get nvram_index */
+      unsigned long nvram_index = 0;
+      char nvram_index_s[11] = {0};
+      grub_size_t nvram_index_slen = pcrlist - tpm_nvram_params;
+      if (nvram_index_slen > sizeof(nvram_index_s) - 1)
+        {
+          grub_free (split_key);
+          return grub_error (GRUB_ERR_BAD_ARGUMENT, "Invalid tpm_nvram params");
+        }
+      grub_memcpy(nvram_index_s, tpm_nvram_params, nvram_index_slen);
+
+      nvram_index = grub_strtoul (nvram_index_s, NULL, 0);
+      if (nvram_index == 0 || nvram_index == ~0UL)
+        {
+          grub_free (split_key);
+          return grub_error (GRUB_ERR_BAD_ARGUMENT, "Invalid tpm_nvram params");
+        }
+
+      err = grub_tpm_nvread_pcr_policy (pcr_sel, nvram_index, MAX_PASSPHRASE, (grub_uint8_t *)passphrase);
+      if (err != GRUB_ERR_NONE)
+        {
+          grub_free (split_key);
+          return err;
+        }
+    }
+  else
+#endif
+    {
+      /* Get the passphrase from the user.  */
+
+      tmp = NULL;
+      if (source->partition)
+        tmp = grub_partition_get_name (source->partition);
+      grub_printf_ (N_("Enter passphrase for %s%s%s (%s): "), source->name,
+                   source->partition ? "," : "", tmp ? : "",
+                   dev->uuid);
+      grub_free (tmp);
+      if (!grub_password_get (passphrase, MAX_PASSPHRASE))
+        {
+          grub_free (split_key);
+          return grub_error (GRUB_ERR_BAD_ARGUMENT, "Passphrase not supplied");
+        }
     }
 
   /* Try to recover master key from each active keyslot.  */

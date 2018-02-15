@@ -19,7 +19,7 @@
 #ifndef GRUB_TPM_HEADER
 #define GRUB_TPM_HEADER 1
 
-#define SHA1_DIGEST_SIZE 20
+#include <grub/tpm20.h>
 
 #define TPM_BASE 0x0
 #define TPM_SUCCESS TPM_BASE
@@ -69,8 +69,23 @@ typedef struct {
 grub_err_t EXPORT_FUNC(grub_tpm_measure) (unsigned char *buf, grub_size_t size,
 					  grub_uint8_t pcr, const char *kind,
 					  const char *description);
+
+#if defined (GRUB_MACHINE_EFI)
+grub_err_t EXPORT_FUNC(grub_tpm_nvread_pcr_policy)(grub_uint8_t pcrSelect[PCR_SELECT_MAX], 
+      grub_uint32_t nvIndex, grub_uint16_t bufsiz, grub_uint8_t *buf);
+#else
+static inline grub_err_t grub_tpm_nvread_pcr_policy(
+    grub_uint8_t pcrSelect[PCR_SELECT_MAX] __attribute__ ((unused)),
+    grub_uint32_t nvIndex __attribute__ ((unused)),
+    grub_uint16_t bufsiz __attribute__ ((unused)),
+    grub_uint8_t *buf __attribute__ ((unused)))
+{
+  return GRUB_ERR_NOT_IMPLEMENTED_YET;
+}
+#endif
+
 #if defined (GRUB_MACHINE_EFI) || defined (GRUB_MACHINE_PCBIOS)
-grub_err_t grub_tpm_execute(PassThroughToTPM_InputParamBlock *inbuf,
+grub_err_t EXPORT_FUNC(grub_tpm_execute) (PassThroughToTPM_InputParamBlock *inbuf,
 			    PassThroughToTPM_OutputParamBlock *outbuf);
 grub_err_t grub_tpm_log_event(unsigned char *buf, grub_size_t size,
 			      grub_uint8_t pcr, const char *description);
